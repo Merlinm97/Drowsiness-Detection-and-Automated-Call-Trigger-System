@@ -1,0 +1,119 @@
+import cv2
+import dlib
+import numpy as np
+import os
+import time
+from twilio.rest import Client
+
+# Load dlib's face detector and shape predictor
+detector = dlib.get_frontal_face_detector()
+shape_predictor_path = r"E:\Project\Open CV\Drowsiness\shape_predictor_68_face_landmarks (2).dat"
+predictor = dlib.shape_predictor(shape_predictor_path)
+
+# Twilio Call Function
+def trigger_call(phone_number):
+    account_sid = 'abcdefhijklmn' #replace it with original value
+    auth_token = 'abcdefhijklmn'  #replace it with original value
+    client = Client(account_sid, auth_token)
+
+    call = client.calls.create(
+        to=phone_number,
+        from_='+12345678910',  # Your Twilio number
+        url='http://demo.twilio.com/docs/voice.xml'  
+    )
+    print(f"Call triggered: {call.sid}")
+
+# Function to calculate Eye Aspect Ratio (EAR)
+def calculate_ear(eye):
+    A = np.linalg.norm(eye[1] - eye[5])
+    B = np.linalg.norm(eye[2] - eye[4])
+    C = np.linalg.norm(eye[0] - eye[3])
+    return (A + B) / (2.0 * C)
+
+# Function to calculate Mouth Aspect Ratio (MAR)
+def calculate_mar(mouth):
+    A = np.linalg.norm(mouth[3] - mouth[9])  
+    B = np.linalg.norm(mouth[2] - mouth[10])
+    C = np.linalg.norm(mouth[4] - mouth[8])
+    D = np.linalg.norm(mouth[0] - mouth[6])  
+    return (A + B + C) / (3 * D)
+
+# Thresholds
+EAR_THRESHOLD = 0.25  
+MAR_THRESHOLD = 0.5  
+DROWSY_TIME_THRESHOLD = 1.0  # 1 second of drowsiness before triggering call
+
+# Video file path
+video_path = r"E:\Project\Open CV\Drowsiness\2nd video.mp4"
+
+# Open the video file
+cap = cv2.VideoCapture(video_path)
+frame_count = 0
+save_interval = 10  
+drowsy_start_time = None  
+call_triggered = False  
+
+# Phone number for call
+phone_number = '+91xxxxxxxxx'  #phone number
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break  
+
+    # Convert frame to grayscale
+    img_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Detect faces
+    faces = detector(img_gray)
+
+    if len(faces) == 0:
+        continue  
+
+    for face in faces:
+        landmarks = predictor(img_gray, face)
+        landmarks_np = np.array([[p.x, p.y] for p in landmarks.parts()])
+
+        # Extract facial landmarks
+        left_eye = landmarks_np[36:42]
+        right_eye = landmarks_np[42:48]
+        mouth = landmarks_np[48:68]
+
+        # Compute EAR and MAR
+        ear_left = calculate_ear(left_eye)
+        ear_right = calculate_ear(right_eye)
+        ear_avg = (ear_left + ear_right) / 2.0
+        mar = calculate_mar(mouth)
+
+        # Determine drowsiness
+        eye_status = "Open" if ear_avg > EAR_THRESHOLD else "Closed"
+        mouth_status = "Open" if mar > MAR_THRESHOLD else "Closed"
+        drowsiness_state = "Drowsy" if eye_status == "Closed" or mouth_status == "Open" else "Normal"
+
+        # Track drowsiness duration
+        if drowsiness_state == "Drowsy":
+            if drowsy_start_time is None:
+                drowsy_start_time = time.time()  # Start drowsy timer
+            elif time.time() - drowsy_start_time >= DROWSY_TIME_THRESHOLD and not call_triggered:
+                print(f"Drowsiness detected for {DROWSY_TIME_THRESHOLD} seconds! Triggering call...")
+                trigger_call(phone_number)
+                call_triggered = True  # Prevent multiple calls
+        else:
+            drowsy_start_time = None  
+            call_triggered = False  
+
+        # Draw bounding box around face
+        x, y, w, h = face.left(), face.top(), face.width(), face.height()
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+        # Display status on image
+        cv2.putText(frame, f"Eyes: {eye_status}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        cv2.putText(frame, f"Mouth: {mouth_status}", (x, y + h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        cv2.putText(frame, f"State: {drowsiness_state}", (x, y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+
+    # Show frame
+    cv2.imshow("Drowsiness Detection", frame)
+    cv2.waitKey(1)  
+
+cap.release()
+cv2.destroyAllWindows()
